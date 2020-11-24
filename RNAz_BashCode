@@ -1,0 +1,151 @@
+module load BEDTools/2.28.0-foss-2018a
+module load BLAST+/2.7.1-foss-2016b-Python-2.7.14
+module load MAFFT/7.407-foss-2018a-with-extensions
+module load SAMtools/1.9-foss-2016b
+module load Biopython/1.68-foss-2016b-Python-3.5.2
+module load RNAz/2.1-foss-2016b
+module load ClustalW2/2.1-foss-2016b
+cd /scratch/yl22225/small_rna/rnaz
+#generate noncoding fa
+cat Cpar_new_complete_annotation_2018.gff3|awk '{if($3=="CDS") print}' |sort -k1,1 -k4,4n >cpar_cds.gff
+bedtools complement -i cpar_cds.gff -g genome.gff >cpar_nc.bed
+bedtools getfasta -fi Cparvum.fasta -bed cpar_nc.bed -fo cpar_nc.fa
+#blast to genomes
+for i in CryptoDB-41_Candersoni30847_Genome.fasta CryptoDB-41_CbaileyiTAMU-09Q1_Genome.fasta CryptoDB-41_Chominis30976_Genome.fasta CryptoDB-41_CmeleagridisUKMEL1_Genome.fasta CryptoDB-41_CmurisRN66_Genome.fasta CryptoDB-41_CtyzzeriUGA55_Genome.fasta CryptoDB-41_Cubiquitum39726_Genome.fasta
+do makeblastdb -in $i -dbtype nucl
+blastn -task blastn -db $i -out ${i%fasta}xml -outfmt 5 -query cpar_nc.fa -num_threads 10 -max_target_seqs 1
+done
+
+for i in *xml
+do python ~/bin/blastxml2tab.py -o ${i%xml}tab -c ext $i
+done
+# ====== ========= ============================================
+# Column NCBI name Description
+# ------ --------- --------------------------------------------
+#      1 qseqid    Query Seq-id (ID of your sequence)
+#      2 sseqid    Subject Seq-id (ID of the database hit)
+#      3 pident    Percentage of identical matches
+#      4 length    Alignment length
+#      5 mismatch  Number of mismatches
+#      6 gapopen   Number of gap openings
+#      7 qstart    Start of alignment in query
+#      8 qend      End of alignment in query
+#      9 sstart    Start of alignment in subject (database hit)
+#     10 send      End of alignment in subject (database hit)
+#     11 evalue    Expectation value (E-value)
+#     12 bitscore  Bit score
+# ====== ========= ============================================
+
+# The additional columns offered in the Galaxy BLAST+ wrappers are:
+
+# ====== ============= ===========================================
+# Column NCBI name     Description
+# ------ ------------- -------------------------------------------
+#     13 sallseqid     All subject Seq-id(s), separated by '
+#     14 score         Raw score
+#     15 nident        Number of identical matches
+#     16 positive      Number of positive-scoring matches
+#     17 gaps          Total number of gaps
+#     18 ppos          Percentage of positive-scoring matches
+#     19 qframe        Query frame
+#     20 sframe        Subject frame
+#     21 qseq          Aligned part of query sequence
+#     22 sseq          Aligned part of subject sequence
+#     23 qlen          Query sequence length
+#     24 slen          Subject sequence length
+#     25 salltitles    All subject titles, separated by 
+# ====== ============= ===========================================
+
+for i in *.tab
+do cat $i|awk '{if($4>50 && $3>70) print}'|sort -k1,1 -k12,12nr|sort -u -k1,1 -k2,2 >${i%.tab}_filtered.tab
+done
+
+cat *Genome_filtered.tab >all_filtered.tab
+cat all_filtered.tab |awk '{print$1"\t"$7"\t"$8}'|sort -k1,1 >all_filtered_position.bed
+
+#extract regions in the cpar noncoding with >4 coverage
+cat cpar_nc.fa |grep ">"|sed 's/>//g'|sed 's/:/\t/g'|sed 's/-/\t/g'|awk '{print$1":"$2"-"$3"\t"$3-$2+1}'>cpar_nc.index
+bedtools genomecov -bga -i ./all_filtered_position.bed -max 5 -g cpar_nc.index >conserved.tab
+cat conserved.tab |awk '{if($4>2) print$1"\t"$2"\t"$3}' >conserved_filtered.tab
+bedtools getfasta -fi cpar_nc.fa -fo conserved_filtered.fa -bed conserved_filtered.tab
+
+#blast again use the conserved fa
+ for i in CryptoDB-41_Candersoni30847_Genome.fasta CryptoDB-41_CbaileyiTAMU-09Q1_Genome.fasta CryptoDB-41_Chominis30976_Genome.fasta CryptoDB-41_CmeleagridisUKMEL1_Genome.fasta CryptoDB-41_CmurisRN66_Genome.fasta CryptoDB-41_CtyzzeriUGA55_Genome.fasta CryptoDB-41_Cubiquitum39726_Genome.fasta
+ do blastn -task blastn -db $i -out ${i%.fasta}_conserved.xml -outfmt 5 -query conserved_filtered.fa -num_threads 10 -max_target_seqs 1
+ done 
+for i in *_conserved.xml
+do python ~/bin/blastxml2tab.py -o ${i%xml}tab -c ext $i
+done
+cat *_conserved.tab >all_conserved.tab
+cat all_conserved.tab|awk '{if($4>50 && $3>70) print}' |sort -k1,1 -k12,12nr|sort -u -k1,1 -k2,2>all_conserved_filtered.tab
+
+#extract seq or realign
+rm -r raw_seqs
+mkdir raw_seqs
+cd raw_seqs
+python extract_seq.py 
+#mafft align
+# rm -r mafft
+mkdir mafft
+for i in ./raw_seqs/*
+do mafft --localpair --maxiterate 1000 --clustalout --thread 10 $i >./mafft/${i#./raw_seqs/}.clustal
+done
+
+#clustalw align
+rm -r clustalw
+mkdir clustalw
+module load ClustalW2/2.1-foss-2016b
+for i in ./raw_seqs/*
+do clustalw2 -INFILE=$i -OUTFILE=./clustalw/${i#./raw_seqs/}.aln
+done
+#rnaz
+	#window
+rm -r rnaz
+mkdir -p ./rnaz/window/
+for i in ./clustalw/*
+do perl /usr/local/apps/eb/RNAz/2.1-foss-2016b/share/RNAz/perl/rnazWindow.pl -w 120 -s 40 -m 120 --min-seqs=4 --max-seqs=8 --min-length 50 $i >./rnaz/window/${i#./clustalw/}
+done
+find ./rnaz/window/ -type f -empty|sed -e 's/\.\/rnaz\/window\///g' >./rnaz/window/empty_id
+while read line
+do cp ./clustalw/$line ./rnaz/window/
+done <./rnaz/window/empty_id
+rm ./rnaz/window/empty_id
+mkdir ./rnaz/window/contig1
+mkdir ./rnaz/window/contig2
+mkdir ./rnaz/window/contig3
+mkdir ./rnaz/window/contig4
+mkdir ./rnaz/window/contig5
+mkdir ./rnaz/window/contig6
+mkdir ./rnaz/window/contig7
+mkdir ./rnaz/window/contig8
+cd ./rnaz/window/
+mv Contig0.1\:* contig1/
+mv Contig1.1\:* contig2/
+mv Contig2.1\:* contig3
+mv Contig3.1\:* contig4/
+mv Contig4.1\:* contig5/
+mv Contig5.1\:* contig6/
+mv Contig6.1\:* contig7/
+mv Contig7.1\:* contig8/
+cd ../../
+	#rnaz
+rm -r ./rnaz/result/
+mkdir -p ./rnaz/result/
+cd /scratch/yl22225/small_rna/rnaz/rnaz
+for i in 1.sh 2.sh 3.sh 4.sh 5.sh 6.sh 7.sh 8.sh
+do qsub $i
+done
+
+#for i in ./rnaz/window/*
+ do RNAz -b -o ./rnaz/result/${i#./rnaz/window/} -p 0.5 $i
+done
+#analysis results
+cd /scratch/yl22225/small_rna/rnaz/rnaz/result
+mkdir notempty
+find . -type f -not -empty >nonempty
+while read line
+ do  mv $line ./notempty/
+ done < nonempty 
+cat nonempty |sed 's/\.\///g'|sed 's/:/\t/g'|sed 's/-/\t/g'|awk '{print$1"\t"$2"\t"$3}' >rnaz_ncRNA_region.bed
+
+
