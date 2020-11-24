@@ -1,3 +1,4 @@
+#usage: python3.6 pairwise_alignment.py seq1.fa seq2.fa
 import sys
 sys.setrecursionlimit(10000)
 ##compare if there is a match
